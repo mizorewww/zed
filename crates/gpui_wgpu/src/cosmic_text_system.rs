@@ -412,26 +412,6 @@ impl CosmicTextSystemState {
                 .get_font(database_id, cosmic_text::Weight::NORMAL)
                 .context("Could not load font")?;
 
-            // HACK: To let the storybook run and render Windows caption icons. We should actually do better font fallback.
-            let allowed_bad_font_names = [
-                "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
-                "Segoe Fluent Icons",
-            ];
-
-            // This only decides whether a face can be a primary font. The
-            // editor measures layout with the width of 'm' and would panic
-            // without it.
-            //
-            // Don't remove the face from the font database. Arabic, Devanagari
-            // and emoji fonts often have no Latin glyphs, and they are exactly
-            // what cosmic-text falls back to when the primary font lacks a
-            // glyph.
-            if font.as_swash().charmap().map('m') == 0
-                && !allowed_bad_font_names.contains(&postscript_name.as_str())
-            {
-                continue;
-            };
-
             let font_id = FontId(self.loaded_fonts.len());
             loaded_font_ids.push(font_id);
             self.loaded_fonts.push(LoadedFont {

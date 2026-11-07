@@ -394,11 +394,11 @@ pub fn init(cx: &mut App) {
             let font_id = window.text_system().resolve_font(&theme.buffer_font);
             let Ok(width) = window
                 .text_system()
-                .advance(font_id, theme.buffer_font_size(cx), 'm')
+                .em_advance(font_id, theme.buffer_font_size(cx))
             else {
                 return;
             };
-            workspace.resize_pane(Axis::Horizontal, width.width * count, window, cx);
+            workspace.resize_pane(Axis::Horizontal, width * count, window, cx);
         });
 
         workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
@@ -408,11 +408,11 @@ pub fn init(cx: &mut App) {
             let font_id = window.text_system().resolve_font(&theme.buffer_font);
             let Ok(width) = window
                 .text_system()
-                .advance(font_id, theme.buffer_font_size(cx), 'm')
+                .em_advance(font_id, theme.buffer_font_size(cx))
             else {
                 return;
             };
-            workspace.resize_pane(Axis::Horizontal, -width.width * count, window, cx);
+            workspace.resize_pane(Axis::Horizontal, -width * count, window, cx);
         });
 
         workspace.register_action(|workspace, _: &ResizePaneUp, window, cx| {

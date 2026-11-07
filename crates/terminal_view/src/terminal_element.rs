@@ -1258,10 +1258,7 @@ impl Element for TerminalElement {
                     let line_height = f32::from(font_pixels) * line_height;
                     let font_id = cx.text_system().resolve_font(&text_style.font());
 
-                    let cell_width = text_system
-                        .advance(font_id, font_pixels, 'm')
-                        .unwrap()
-                        .width;
+                    let cell_width = text_system.em_advance(font_id, font_pixels).unwrap();
                     gutter = cell_width;
 
                     let mut size = bounds.size;
