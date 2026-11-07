@@ -391,6 +391,15 @@ impl TextSystem {
             .platform_text_system
             .glyph_for_char(font_id, character)
             .with_context(|| format!("glyph not found for character '{character}'"))?;
+        self.glyph_typographic_bounds(font_id, font_size, glyph_id)
+    }
+
+    fn glyph_typographic_bounds(
+        &self,
+        font_id: FontId,
+        font_size: Pixels,
+        glyph_id: GlyphId,
+    ) -> Result<Bounds<Pixels>> {
         let bounds = self
             .platform_text_system
             .typographic_bounds(font_id, glyph_id)?;
@@ -405,6 +414,15 @@ impl TextSystem {
             .platform_text_system
             .glyph_for_char(font_id, ch)
             .with_context(|| format!("glyph not found for character '{ch}'"))?;
+        self.glyph_advance(font_id, font_size, glyph_id)
+    }
+
+    fn glyph_advance(
+        &self,
+        font_id: FontId,
+        font_size: Pixels,
+        glyph_id: GlyphId,
+    ) -> Result<Size<Pixels>> {
         let result = self.platform_text_system.advance(font_id, glyph_id)?
             / self.units_per_em(font_id) as f32;
 
@@ -430,16 +448,41 @@ impl TextSystem {
 
     /// Returns the width of an `em`.
     ///
-    /// Uses the width of the `m` character in the given font and size.
+    /// Uses the width of the `m` character in the given font and size. If the font has no `m`,
+    /// the `m` of the font it falls back to is used.
     pub fn em_width(&self, font_id: FontId, font_size: Pixels) -> Result<Pixels> {
-        Ok(self.typographic_bounds(font_id, font_size, 'm')?.size.width)
+        let (font_id, glyph_id) = self.em_glyph(font_id, font_size)?;
+        Ok(self
+            .glyph_typographic_bounds(font_id, font_size, glyph_id)?
+            .size
+            .width)
     }
 
     /// Returns the advance width of an `em`.
     ///
-    /// Uses the advance width of the `m` character in the given font and size.
+    /// Uses the advance width of the `m` character in the given font and size. If the font has
+    /// no `m`, the `m` of the font it falls back to is used.
     pub fn em_advance(&self, font_id: FontId, font_size: Pixels) -> Result<Pixels> {
-        Ok(self.advance(font_id, font_size, 'm')?.width)
+        let (font_id, glyph_id) = self.em_glyph(font_id, font_size)?;
+        Ok(self.glyph_advance(font_id, font_size, glyph_id)?.width)
+    }
+
+    fn em_glyph(&self, font_id: FontId, font_size: Pixels) -> Result<(FontId, GlyphId)> {
+        if let Some(glyph_id) = self.platform_text_system.glyph_for_char(font_id, 'm') {
+            return Ok((font_id, glyph_id));
+        }
+
+        // Fonts for non-Latin scripts often have no `m`. Measure the `m` that text set in such a
+        // font is drawn with instead.
+        let layout =
+            self.platform_text_system
+                .layout_line("m", font_size, &[FontRun { len: 1, font_id }]);
+        layout
+            .runs
+            .iter()
+            .filter(|run| run.font_id != font_id)
+            .find_map(|run| Some((run.font_id, run.glyphs.first()?.id)))
+            .context("glyph not found for character 'm'")
     }
 
     /// Returns the width of an `ch`.
@@ -1392,5 +1435,122 @@ mod missing_glyph_tests {
 
     fn missing_glyph(grapheme: &'static str) -> MissingGlyph {
         MissingGlyph::new(grapheme.into(), FallbackFontClass::Proportional)
+    }
+}
+
+#[cfg(test)]
+mod em_tests {
+    use super::*;
+    use crate::{NoopTextSystem, point, size};
+
+    const LATIN: FontId = FontId(1);
+    const HEBREW: FontId = FontId(2);
+    const SYMBOLS: FontId = FontId(3);
+    const M: GlyphId = GlyphId(80);
+
+    /// `HEBREW` has no `m` and shaping falls back to `LATIN` for it. `SYMBOLS` has no `m` either,
+    /// and shaping finds no other font for it.
+    struct FallbackTextSystem;
+
+    impl PlatformTextSystem for FallbackTextSystem {
+        fn add_fonts(&self, _fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+            Ok(())
+        }
+
+        fn all_font_names(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn font_id(&self, _descriptor: &Font) -> Result<FontId> {
+            Ok(LATIN)
+        }
+
+        fn font_metrics(&self, font_id: FontId) -> FontMetrics {
+            FontMetrics {
+                units_per_em: if font_id == LATIN { 2048 } else { 1000 },
+                ..NoopTextSystem.font_metrics(font_id)
+            }
+        }
+
+        fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>> {
+            assert_eq!((font_id, glyph_id), (LATIN, M));
+            Ok(Bounds {
+                origin: point(100., 0.),
+                size: size(1536., 1100.),
+            })
+        }
+
+        fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>> {
+            assert_eq!((font_id, glyph_id), (LATIN, M));
+            Ok(size(1792., 0.))
+        }
+
+        fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
+            (font_id == LATIN && ch == 'm').then_some(M)
+        }
+
+        fn glyph_raster_bounds(&self, _params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+            Ok(Default::default())
+        }
+
+        fn rasterize_glyph(
+            &self,
+            _params: &RenderGlyphParams,
+            raster_bounds: Bounds<DevicePixels>,
+        ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
+            Ok((raster_bounds.size, Vec::new()))
+        }
+
+        fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
+            let (font_id, id) = if runs[0].font_id == SYMBOLS {
+                (SYMBOLS, GlyphId(0))
+            } else {
+                (LATIN, M)
+            };
+            LineLayout {
+                font_size,
+                width: px(14.),
+                ascent: px(9.),
+                descent: px(3.),
+                runs: vec![ShapedRun {
+                    font_id,
+                    glyphs: vec![ShapedGlyph {
+                        id,
+                        position: point(px(0.), px(0.)),
+                        index: 0,
+                        is_emoji: false,
+                    }],
+                }],
+                len: text.len(),
+            }
+        }
+
+        fn recommended_rendering_mode(
+            &self,
+            _font_id: FontId,
+            _font_size: Pixels,
+        ) -> TextRenderingMode {
+            TextRenderingMode::Grayscale
+        }
+    }
+
+    #[test]
+    fn em_of_font_without_m_is_measured_in_fallback_font() {
+        let text_system = TextSystem::new(Arc::new(FallbackTextSystem));
+        let font_size = px(16.);
+
+        let em_width = text_system.em_width(LATIN, font_size).unwrap();
+        let em_advance = text_system.em_advance(LATIN, font_size).unwrap();
+        assert_eq!(em_width, px(1536. / 2048. * 16.));
+        assert_eq!(em_advance, px(1792. / 2048. * 16.));
+
+        assert_eq!(text_system.em_width(HEBREW, font_size).unwrap(), em_width);
+        assert_eq!(
+            text_system.em_advance(HEBREW, font_size).unwrap(),
+            em_advance
+        );
+
+        assert!(text_system.em_width(SYMBOLS, font_size).is_err());
+        assert!(text_system.em_advance(SYMBOLS, font_size).is_err());
     }
 }
