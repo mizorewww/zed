@@ -21,14 +21,16 @@ use core_text::{
         kCTFontFeatureSettingsAttribute,
     },
 };
-use font_kit::font::Font as FontKitFont;
+use font_kit::{family_name::FamilyName, font::Font as FontKitFont, sources::mem::MemSource};
 use gpui::{FontFallbacks, FontFeatures};
+use gpui_util::ResultExt as _;
 use objc2_core_text::{kCTFontOpenTypeFeatureTag, kCTFontOpenTypeFeatureValue};
 
 pub fn apply_features_and_fallbacks(
     font: &mut FontKitFont,
     features: &FontFeatures,
     fallbacks: Option<&FontFallbacks>,
+    memory_source: &MemSource,
 ) -> anyhow::Result<()> {
     unsafe {
         let mut keys = vec![kCTFontFeatureSettingsAttribute];
@@ -37,7 +39,7 @@ pub fn apply_features_and_fallbacks(
             && !fallbacks.fallback_list().is_empty()
         {
             keys.push(kCTFontCascadeListAttribute);
-            values.push(generate_fallback_array(fallbacks, font));
+            values.push(generate_fallback_array(fallbacks, font, memory_source));
         }
         let attrs = CFDictionaryCreate(
             kCFAllocatorDefault,
@@ -102,13 +104,34 @@ fn generate_feature_array(features: &FontFeatures) -> CFMutableArrayRef {
     }
 }
 
-fn generate_fallback_array(fallbacks: &FontFallbacks, font: &mut FontKitFont) -> CFMutableArrayRef {
+fn generate_fallback_array(
+    fallbacks: &FontFallbacks,
+    font: &mut FontKitFont,
+    memory_source: &MemSource,
+) -> CFMutableArrayRef {
     unsafe {
         let symbolic_traits = font.native_font().symbolic_traits();
         let all_traits = font.native_font().all_traits();
 
         let fallback_array = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+        let mut properties = None;
         for user_fallback in fallbacks.fallback_list() {
+            // CoreText looks up the fallbacks below by family name among the fonts registered with
+            // the system, which doesn't include the fonts added with `add_fonts`. Use the
+            // descriptor of the loaded font for those instead.
+            if memory_source.select_family_by_name(user_fallback).is_ok() {
+                let properties = *properties.get_or_insert_with(|| font.properties());
+                let fallback_font = memory_source
+                    .select_best_match(&[FamilyName::Title(user_fallback.clone())], &properties)
+                    .log_err()
+                    .and_then(|handle| handle.load().log_err());
+                if let Some(fallback_font) = fallback_font {
+                    let descriptor = fallback_font.native_font().copy_descriptor();
+                    CFArrayAppendValue(fallback_array, descriptor.as_concrete_TypeRef() as _);
+                    continue;
+                }
+            }
+
             let name = CFString::from(user_fallback.as_str());
 
             let traits_keys = [kCTFontWeightTrait, kCTFontSlantTrait];

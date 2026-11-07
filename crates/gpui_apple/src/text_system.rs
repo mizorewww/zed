@@ -278,6 +278,12 @@ impl AppleTextSystemState {
             })
             .collect::<Result<Vec<_>>>()?;
         self.memory_source.add_fonts(fonts.into_iter())?;
+        // The fallbacks of fonts chosen so far may name one of the added fonts, so choose fonts
+        // with fallbacks again. Font IDs that were already handed out remain valid.
+        self.font_selections
+            .retain(|font, _| font.fallbacks.is_none());
+        self.font_ids_by_font_key
+            .retain(|font_key, _| font_key.font_fallbacks.is_none());
         Ok(())
     }
 
@@ -298,7 +304,7 @@ impl AppleTextSystemState {
         for font in family.fonts() {
             let mut font = font.load()?;
 
-            apply_features_and_fallbacks(&mut font, features, fallbacks)?;
+            apply_features_and_fallbacks(&mut font, features, fallbacks, &self.memory_source)?;
             // This block contains a precautionary fix to guard against loading fonts
             // that might cause panics due to `.unwrap()`s up the chain.
             {
@@ -1061,5 +1067,87 @@ mod tests {
         let layout = fonts.layout_line(text, px(16.), font_runs);
         assert_eq!(layout.len, 0);
         assert!(layout.runs.is_empty());
+    }
+
+    const LILEX: &[u8] = include_bytes!("../../../assets/fonts/lilex/Lilex-Regular.ttf");
+    const IBM_PLEX_SANS: &[u8] =
+        include_bytes!("../../../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf");
+    // Lilex has a glyph for this box-drawing character and IBM Plex Sans doesn't.
+    const BOX_DRAWING: &str = "\u{2500}";
+
+    fn font_with_fallbacks(family: &str, fallbacks: &[&str]) -> gpui::Font {
+        let mut font = font(family);
+        font.fallbacks = Some(FontFallbacks::from_fonts(
+            fallbacks.iter().map(|name| name.to_string()).collect(),
+        ));
+        font
+    }
+
+    fn box_drawing_font_ids(fonts: &AppleTextSystem, font: &gpui::Font) -> Vec<FontId> {
+        let font_id = fonts.font_id(font).unwrap();
+        let runs = [FontRun {
+            font_id,
+            len: BOX_DRAWING.len(),
+        }];
+        fonts
+            .layout_line(BOX_DRAWING, px(16.), &runs)
+            .runs
+            .iter()
+            .map(|run| run.font_id)
+            .collect()
+    }
+
+    #[test]
+    fn test_added_font_as_fallback() {
+        let fonts = AppleTextSystem::new();
+        fonts
+            .add_fonts(vec![IBM_PLEX_SANS.into(), LILEX.into()])
+            .unwrap();
+        let ibm_plex_sans = fonts.font_id(&font("IBM Plex Sans")).unwrap();
+        let lilex = fonts.font_id(&font("Lilex")).unwrap();
+        let menlo = fonts.font_id(&font("Menlo")).unwrap();
+        let character = BOX_DRAWING.chars().next().unwrap();
+        assert!(fonts.glyph_for_char(ibm_plex_sans, character).is_none());
+        assert!(fonts.glyph_for_char(lilex, character).is_some());
+        assert!(fonts.glyph_for_char(menlo, character).is_some());
+
+        assert_eq!(
+            box_drawing_font_ids(&fonts, &font_with_fallbacks("IBM Plex Sans", &["Lilex"])),
+            [lilex]
+        );
+        // Added fonts and system fonts keep their order in the fallback list.
+        assert_eq!(
+            box_drawing_font_ids(
+                &fonts,
+                &font_with_fallbacks("IBM Plex Sans", &["Menlo", "Lilex"])
+            ),
+            [menlo]
+        );
+        assert_eq!(
+            box_drawing_font_ids(
+                &fonts,
+                &font_with_fallbacks("IBM Plex Sans", &["Lilex", "Menlo"])
+            ),
+            [lilex]
+        );
+    }
+
+    #[test]
+    fn test_fallback_added_after_font_was_chosen() {
+        let fonts = AppleTextSystem::new();
+        fonts.add_fonts(vec![IBM_PLEX_SANS.into()]).unwrap();
+        let without_fallbacks = fonts.font_id(&font("IBM Plex Sans")).unwrap();
+        let with_fallbacks = font_with_fallbacks("IBM Plex Sans", &["Lilex"]);
+        let before = fonts.font_id(&with_fallbacks).unwrap();
+
+        fonts.add_fonts(vec![LILEX.to_vec().into()]).unwrap();
+        let lilex = fonts.font_id(&font("Lilex")).unwrap();
+        assert_ne!(fonts.font_id(&with_fallbacks).unwrap(), before);
+        assert_eq!(box_drawing_font_ids(&fonts, &with_fallbacks), [lilex]);
+        assert!(fonts.font_metrics(before).units_per_em > 0);
+        assert_eq!(
+            fonts.font_id(&font("IBM Plex Sans")).unwrap(),
+            without_fallbacks
+        );
     }
 }
