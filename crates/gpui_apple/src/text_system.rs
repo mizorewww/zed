@@ -77,6 +77,8 @@ struct AppleTextSystemState {
     font_ids_by_postscript_name: HashMap<String, FontId>,
     font_ids_by_font_key: HashMap<FontKey, SmallVec<[FontId; 4]>>,
     postscript_names_by_font_id: HashMap<FontId, String>,
+    /// Fonts with an `sbix` table, whose glyphs are color bitmaps.
+    sbix_font_ids: HashSet<FontId>,
 }
 
 impl AppleTextSystem {
@@ -90,6 +92,7 @@ impl AppleTextSystem {
             font_ids_by_postscript_name: HashMap::default(),
             font_ids_by_font_key: HashMap::default(),
             postscript_names_by_font_id: HashMap::default(),
+            sbix_font_ids: HashSet::default(),
         }))
     }
 }
@@ -385,6 +388,9 @@ impl AppleTextSystemState {
                 .insert(postscript_name.clone(), font_id);
             self.postscript_names_by_font_id
                 .insert(font_id, postscript_name);
+            if has_sbix_table(&font.native_font()) {
+                self.sbix_font_ids.insert(font_id);
+            }
             self.fonts.push(font);
         }
         Ok(font_ids)
@@ -410,6 +416,9 @@ impl AppleTextSystemState {
                 .insert(postscript_name.clone(), font_id);
             self.postscript_names_by_font_id
                 .insert(font_id, postscript_name);
+            if has_sbix_table(&requested_font) {
+                self.sbix_font_ids.insert(font_id);
+            }
             self.fonts
                 .push(font_kit::font::Font::from_core_graphics_font(
                     requested_font.copy_to_CGFont(),
@@ -419,11 +428,15 @@ impl AppleTextSystemState {
     }
 
     fn is_emoji(&self, font_id: FontId) -> bool {
-        self.postscript_names_by_font_id
-            .get(&font_id)
-            .is_some_and(|postscript_name| {
-                postscript_name == "AppleColorEmoji" || postscript_name == ".AppleColorEmojiUI"
-            })
+        // Glyphs of fonts with an `sbix` table, such as emoji fonts added by the app or installed
+        // by the user, are bitmaps that are drawn in color, like those of Apple Color Emoji.
+        self.sbix_font_ids.contains(&font_id)
+            || self
+                .postscript_names_by_font_id
+                .get(&font_id)
+                .is_some_and(|postscript_name| {
+                    postscript_name == "AppleColorEmoji" || postscript_name == ".AppleColorEmojiUI"
+                })
     }
 
     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
@@ -673,6 +686,13 @@ impl<'a> StringIndexConverter<'a> {
     }
 }
 
+/// Whether the font has an `sbix` table, which stores glyphs as color bitmaps.
+fn has_sbix_table(font: &CTFont) -> bool {
+    const SBIX: u32 = u32::from_be_bytes(*b"sbix");
+    font.get_available_font_tables()
+        .is_some_and(|tables| tables.iter().any(|tag| *tag == SBIX))
+}
+
 fn font_kit_metrics_to_metrics(metrics: Metrics) -> FontMetrics {
     FontMetrics {
         units_per_em: metrics.units_per_em,
@@ -783,7 +803,8 @@ mod lenient_font_attributes {
 mod tests {
     use crate::AppleTextSystem;
     use gpui::{
-        FontFallbacks, FontFeatures, FontId, FontRun, GlyphId, PlatformTextSystem, font, px,
+        FontFallbacks, FontFeatures, FontId, FontRun, GlyphId, PlatformTextSystem,
+        RenderGlyphParams, font, point, px,
     };
     use std::sync::Arc;
 
@@ -1061,5 +1082,82 @@ mod tests {
         let layout = fonts.layout_line(text, px(16.), font_runs);
         assert_eq!(layout.len, 0);
         assert!(layout.runs.is_empty());
+    }
+
+    // One glyph for U+E000 and `m`, a 32x32 opaque red square stored only as an `sbix` PNG, built
+    // by `test_fonts/sbix/make_sbix_test_font.py`.
+    const SBIX_TEST: &[u8] = include_bytes!("../test_fonts/sbix/SbixTest.ttf");
+    const SBIX_TEST_GLYPH: &str = "\u{E000}";
+
+    fn is_emoji_when_shaped(fonts: &AppleTextSystem, font_id: FontId, text: &str) -> bool {
+        let runs = [FontRun {
+            font_id,
+            len: text.len(),
+        }];
+        let layout = fonts.layout_line(text, px(16.), &runs);
+        assert_eq!(layout.runs[0].font_id, font_id);
+        layout.runs[0].glyphs[0].is_emoji
+    }
+
+    #[test]
+    fn test_added_sbix_font_is_drawn_in_color() {
+        let fonts = AppleTextSystem::new();
+        fonts.add_fonts(vec![SBIX_TEST.into()]).unwrap();
+        let font_id = fonts.font_id(&font("GPUI Sbix Test")).unwrap();
+        assert!(is_emoji_when_shaped(&fonts, font_id, SBIX_TEST_GLYPH));
+
+        let params = RenderGlyphParams {
+            font_id,
+            glyph_id: fonts
+                .glyph_for_char(font_id, SBIX_TEST_GLYPH.chars().next().unwrap())
+                .unwrap(),
+            font_size: px(32.),
+            subpixel_variant: point(0, 0),
+            scale_factor: 1.,
+            is_emoji: true,
+            subpixel_rendering: false,
+            dilation: 0,
+        };
+        let bounds = fonts.glyph_raster_bounds(&params).unwrap();
+        let (size, bytes) = fonts.rasterize_glyph(&params, bounds).unwrap();
+        let (width, height) = (size.width.0 as usize, size.height.0 as usize);
+        assert!(width >= 32 && height >= 32, "{size:?}");
+        assert_eq!(bytes.len(), width * height * 4);
+        // The pixels are BGRA, and the middle of the square is opaque red.
+        let middle = (height / 2 * width + width / 2) * 4;
+        let [blue, green, red, alpha] = bytes[middle..middle + 4] else {
+            unreachable!()
+        };
+        assert!(
+            red > 240 && green < 16 && blue < 16 && alpha > 240,
+            "{:?}",
+            [blue, green, red, alpha]
+        );
+    }
+
+    #[test]
+    fn test_fallback_sbix_font_is_emoji() {
+        // Fonts that CoreText falls back to while shaping get their ID from `id_for_native_font`.
+        let fonts = AppleTextSystem::new();
+        let is_emoji = |native_font| {
+            let font_id = fonts.0.write().id_for_native_font(native_font);
+            fonts.0.read().is_emoji(font_id)
+        };
+        assert!(is_emoji(
+            core_text::font::new_from_buffer(SBIX_TEST).unwrap()
+        ));
+        assert!(is_emoji(
+            core_text::font::new_from_name("AppleColorEmoji", 16.).unwrap()
+        ));
+        assert!(!is_emoji(
+            core_text::font::new_from_name("Helvetica", 16.).unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_outline_font_is_not_emoji() {
+        let fonts = AppleTextSystem::new();
+        let helvetica = fonts.font_id(&font("Helvetica")).unwrap();
+        assert!(!is_emoji_when_shaped(&fonts, helvetica, "m"));
     }
 }
