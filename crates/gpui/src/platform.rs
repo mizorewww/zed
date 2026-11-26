@@ -668,6 +668,25 @@ pub trait Platform: 'static {
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
+
+    /// Returns the UTF-8 byte ranges of the words in `text` that the system's
+    /// spell checker does not know. Empty where the platform has none.
+    fn misspelled_words(&self, text: &str) -> Vec<Range<usize>> {
+        _ = text;
+        Vec::new()
+    }
+
+    /// Returns the system spell checker's suggestions for `word`, best first.
+    fn spelling_guesses(&self, word: &str) -> Vec<String> {
+        _ = word;
+        Vec::new()
+    }
+
+    /// Adds `word` to the user's dictionary, so that the system's spell
+    /// checker no longer reports it.
+    fn learn_spelling(&self, word: &str) {
+        _ = word;
+    }
 }
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.

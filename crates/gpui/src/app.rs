@@ -5,7 +5,7 @@ use std::{
     ffi::OsString,
     marker::PhantomData,
     mem,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Range},
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::Arc,
@@ -1322,6 +1322,24 @@ impl App {
         self.foreground_executor.spawn(futures).detach();
 
         self.quitting = false;
+    }
+
+    /// Returns the UTF-8 byte ranges of the words in `text` that the system's
+    /// spell checker does not know, for a text field to mark. Empty on
+    /// platforms without a system spell checker (only macOS has one here).
+    pub fn misspelled_words(&self, text: &str) -> Vec<Range<usize>> {
+        self.platform.misspelled_words(text)
+    }
+
+    /// Returns the system spell checker's suggestions for `word`, best first.
+    pub fn spelling_guesses(&self, word: &str) -> Vec<String> {
+        self.platform.spelling_guesses(word)
+    }
+
+    /// Adds `word` to the user's dictionary, shared with the other apps that
+    /// use the system's spell checker.
+    pub fn learn_spelling(&self, word: &str) {
+        self.platform.learn_spelling(word)
     }
 
     /// Get the id of the current keyboard layout

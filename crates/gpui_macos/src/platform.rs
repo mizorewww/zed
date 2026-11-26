@@ -1165,6 +1165,18 @@ impl Platform for MacPlatform {
         Box::new(MacKeyboardLayout::new())
     }
 
+    fn misspelled_words(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        crate::spelling::misspelled_words(text)
+    }
+
+    fn spelling_guesses(&self, word: &str) -> Vec<String> {
+        crate::spelling::spelling_guesses(word)
+    }
+
+    fn learn_spelling(&self, word: &str) {
+        crate::spelling::learn_spelling(word)
+    }
+
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
         self.0.lock().keyboard_mapper.clone()
     }
